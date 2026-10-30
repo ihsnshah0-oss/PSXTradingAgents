@@ -38,7 +38,7 @@ import re
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 # --------------------------------------------------------------------------- #
 # Hosts
@@ -61,6 +61,33 @@ ALLOWED_HOSTS = frozenset({
     SBP_HOST,
 })
 
+# --------------------------------------------------------------------------- #
+# Read-only mirror tier
+# --------------------------------------------------------------------------- #
+#
+# GitHub hosts data that *mirrors* PSX output.  It is a mirror tier, not a data
+# source of its own: nothing here is authoritative, everything fetched from it
+# is stamped ``source_kind="mirror"`` plus the exact repository, and the desk's
+# ingestion treats a mirror-derived packet as ``partial`` quality whatever else
+# it contains.  Mirror hosts are therefore kept in a *separate* allow-list that
+# only :mod:`psx_desk.dataflows.github_mirror` opts into, so the "PSX/SBP only"
+# guarantee on the primary data path stays literally enforced.
+
+GITHUB_RAW_HOST = "raw.githubusercontent.com"
+GITHUB_API_HOST = "api.github.com"
+GITHUB_CODELOAD_HOST = "codeload.github.com"
+
+MIRROR_HOSTS = frozenset({GITHUB_RAW_HOST, GITHUB_API_HOST, GITHUB_CODELOAD_HOST})
+
+SOURCE_MIRROR_GITHUB = "github_mirror"
+
+#: Repositories this project has verified by hand.  Anything else still has to
+#: be opted into by the operator, but it will never be described as "verified".
+VERIFIED_MIRROR_REPOS = frozenset({
+    "bigbajwatv-alt/psx-data",
+    "Muhammad-Wasif/PSX-Stock-Market-Dataset",
+})
+
 
 class SourceKind(StrEnum):
     """What a payload is, so downstream code knows how to read it."""
@@ -74,20 +101,26 @@ class SourceKind(StrEnum):
     DEFAULTER_LIST = "defaulter_list"
     CIRCUIT_RULES = "circuit_rules"
     MACRO = "macro"
+    MIRROR = "mirror"
 
 
-def assert_source_allowed(url: str) -> str:
+def assert_source_allowed(url: str, *, allow_mirror: bool = False) -> str:
     """Return ``url`` if its host is a PSX/SBP host, else raise ``ValueError``.
 
     This is the guard that makes "all agents derive context exclusively from
     PSX" an enforced property rather than a prompt instruction.
+
+    ``allow_mirror=True`` additionally admits the read-only GitHub mirror hosts.
+    Only :mod:`psx_desk.dataflows.github_mirror` passes it, and mirror payloads
+    are always tagged :attr:`SourceKind.MIRROR`.
     """
 
     host = (urlparse(url).hostname or "").lower()
-    if host not in ALLOWED_HOSTS:
+    permitted = ALLOWED_HOSTS | MIRROR_HOSTS if allow_mirror else ALLOWED_HOSTS
+    if host not in permitted:
         raise ValueError(
             f"source not permitted: {url!r} (host {host!r}). "
-            f"Allowed hosts: {', '.join(sorted(ALLOWED_HOSTS))}"
+            f"Allowed hosts: {', '.join(sorted(permitted))}"
         )
     if urlparse(url).scheme not in {"http", "https"}:
         raise ValueError(f"unsupported scheme in {url!r}")
@@ -216,6 +249,38 @@ PUCARS_URL = f"{PSX_WEB}/psx/announcement/companies"
 ENFORCEMENT_URL = f"{PSX_WEB}/psx/regulations/enforcement-actions"
 SBP_HOME_URL = f"{SBP_WEB}/"
 SBP_MONETARY_POLICY_URL = f"{SBP_WEB}/m_policy/"
+
+
+# --------------------------------------------------------------------------- #
+# GitHub mirror URLs
+# --------------------------------------------------------------------------- #
+
+
+def mirror_url(repo: str, ref: str, path: str, *, via: str = "raw") -> str:
+    """Build the URL for a file inside a GitHub data repository.
+
+    Args:
+        repo: ``"owner/name"``.
+        ref: Branch, tag or commit SHA.  Pin a SHA for a reproducible scrape.
+        path: File path inside the repository (empty for the tarball).
+        via: ``raw`` (raw.githubusercontent.com), ``api`` (api.github.com) or
+            ``tarball`` (codeload.github.com).
+    """
+
+    if repo.count("/") != 1:
+        raise ValueError(f"not a GitHub repository: {repo!r}")
+    if not path and via != "tarball":
+        raise ValueError("a file path is required for raw/api access")
+    clean = path.lstrip("/")
+    if via == "raw":
+        url = f"https://{GITHUB_RAW_HOST}/{repo}/{ref}/{quote(clean)}"
+    elif via == "api":
+        url = f"https://{GITHUB_API_HOST}/repos/{repo}/contents/{quote(clean)}?ref={quote(ref)}"
+    elif via == "tarball":
+        url = f"https://{GITHUB_CODELOAD_HOST}/{repo}/tar.gz/{quote(ref)}"
+    else:
+        raise ValueError(f"unknown GitHub access path: {via!r}")
+    return assert_source_allowed(url, allow_mirror=True)
 
 for _url in (
     SYMBOL_DIRECTORY_URL,

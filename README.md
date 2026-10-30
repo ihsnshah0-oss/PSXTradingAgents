@@ -116,7 +116,92 @@ stdlib HTML table reader.
 
 ---
 
-## 4. Pakistani market structure, in code
+## 4. GitHub mirrors — the labelled fallback tier
+
+Some machines cannot reach `dps.psx.com.pk` (corporate proxy, exchange portal outage, a rate-limited
+link). For those days there is a second, **opt-in** data path: community repositories on GitHub that
+publish PSX data. It is deliberately not a source of truth, and it is off by default.
+
+| Preset | Repository | Carries | Verified schema |
+| --- | --- | --- | --- |
+| `psx-data` | `bigbajwatv-alt/psx-data` | whole-board snapshot (484 scrips), symbol directory + sectors, KSE indices | `daily_summary.json`, `latest_snapshot.json`, `symbols.json`, `indices_eod.json`, `sectors.json` |
+| `psx-history` | `Muhammad-Wasif/PSX-Stock-Market-Dataset` | ~10 years of daily OHLCV for 105 KSE-100 names, name→symbol map, index constituents | `stocks/<Company>.csv`, `combined/PSX_KSE100_Full_Historical_Daily.csv`, `metadata/*` |
+
+```bash
+psx-desk mirror list                     # presets, refs, files, licence
+psx-desk mirror fetch SYS                # one scrip off the snapshot mirror
+psx-desk mirror history SYS --days 250   # daily OHLCV from the history dataset
+psx-desk mirror fetch SYS --as-of 2026-10-29 --via tarball
+```
+
+```python
+from datetime import date
+from psx_desk.dataflows.github_mirror import fetch_mirror_history, scrape_psx_mirror
+
+dump = scrape_psx_mirror("psx-data", as_of=date(2026, 10, 29))
+dump.mirror, dump.mirror_as_of, dump.missing_fields   # provenance is part of the type
+bars = fetch_mirror_history("SYS", mirror="psx-history", days=250)
+```
+
+### What the code guarantees
+
+* **Off by default.** `PSXDESK_MIRROR_POLICY=off` means the mirror module is never imported or called;
+  `psx-desk doctor` prints `GitHub mirror tier disabled (PSX/SBP only)`. The default allow-list in
+  `psx_desk/sources.py` still contains only PSX and SBP hosts.
+* **A separate allow-list.** `MIRROR_HOSTS` (`raw.githubusercontent.com`, `api.github.com`,
+  `codeload.github.com`) is disjoint from `ALLOWED_HOSTS`, and only
+  `psx_desk/dataflows/github_mirror.py` can opt into it (`assert_source_allowed(url, allow_mirror=True)`).
+  `tests/test_source_discipline.py` AST-scans the package to prove no other module does, and that
+  foreign vendors stay blocked *even with* the mirror opt-in.
+* **Three access paths, in order.** `raw.githubusercontent.com` → `api.github.com` (base64 contents,
+  honouring `PSXDESK_GITHUB_TOKEN` for the 60 req/h anonymous limit) → `codeload.github.com` tarball
+  (one request for the whole repo, used for the 12 MB history dataset). Each fetch is cached and
+  carries a SHA-256 like every other payload.
+* **Newest snapshot wins.** Mirrors accumulate files; the scraper reads every board file the preset
+  lists and keeps the most recently dated one, logging the ones it ignored.
+* **Staleness is a hard gate.** `PSXDESK_MIRROR_MAX_STALENESS_DAYS` (default `5`) refuses a snapshot
+  older than the session being priced, with a message naming the gap. This matters in practice: the
+  `psx-data` snapshot files were dated 2026-05-22 and 2026-08-19 when this integration was written,
+  so a naive fallback would have quietly priced October 2026 from an August print.
+* **Never a price it cannot vouch for.** A mirror row is a real number from a real publish or the row
+  is absent — no interpolation, no carry-forward. Exchange circuit caps, trades and free-float mcap are
+  reported missing because no mirror publishes them.
+* **A session close must be a session close.** With no board row, the close can only come from the last
+  bar, so `PSXDESK_SESSION_CLOSE_MAX_LAG_DAYS` (default `5`) bounds how old that bar may be. When this
+  integration was written, `psx-desk scrape SYS --date 2026-10-29` with the fallback enabled refused
+  with *"the most recent bar is 2026-10-08 (21 days earlier) … Refusing to quote a stale close"* —
+  which is the correct answer, and the one a silent carry-forward would have hidden.
+* **Mirrors can never upgrade a packet.** Any mirror-sourced price or bar forces
+  `data_quality="partial"`, adds `exchange_verified_prices` / `exchange_verified_history` to
+  `missing_fields`, and writes a note naming the repository and its own snapshot date.
+
+### Policy matrix
+
+| `PSXDESK_MIRROR_POLICY` | Prices/bars | Reference fields (sector, name, index levels) | `data_quality` |
+| --- | --- | --- | --- |
+| `off` (default) | PSX only | PSX only | as PSX reports |
+| `backfill` | **PSX only** | PSX, then mirror for gaps | unchanged (mirror never prices) |
+| `fallback` | PSX, else mirror | PSX, then mirror | forced `partial` when the mirror was used |
+
+```bash
+# Karachi proxy that terminates TLS? point the desk at the corporate CA instead of disabling checks.
+PSXDESK_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+
+PSXDESK_MIRROR_POLICY=fallback
+PSXDESK_GITHUB_MIRROR=psx-data
+PSXDESK_GITHUB_HISTORY_MIRROR=psx-history
+# PSXDESK_GITHUB_TOKEN=ghp_...     # raises the API rate limit
+# PSXDESK_GITHUB_VIA=tarball       # force one access path
+```
+
+> **Attribution.** Mirror data belongs to its maintainers (`bigbajwatv-alt/psx-data`,
+> `Muhammad-Wasif/PSX-Stock-Market-Dataset`, MIT for the latter) and to the exchange it mirrors. Read
+> the repository's licence before redistributing, and remember that PSX's own `dps.psx.com.pk` file
+> is what a compliance review will ask to see.
+
+---
+
+## 5. Pakistani market structure, in code
 
 ### Circuit locks (`psx_desk/market_rules.py`)
 
@@ -150,7 +235,7 @@ unreachable, the desk falls back to a **dated, labelled print** and marks the ba
 
 ---
 
-## 5. Outputs
+## 6. Outputs
 
 Each run writes three artifacts to `var/runs/<symbol>_<date>_<id>/`:
 
@@ -193,7 +278,7 @@ the size is clamped to the desk's computed maximum before the JSON is emitted.
 
 ---
 
-## 6. Quickstart
+## 7. Quickstart
 
 ```bash
 git clone <this repo> && cd PSXTradingAgents
@@ -246,7 +331,7 @@ substitute a scripted invoker.
 
 ---
 
-## 7. Configuration
+## 8. Configuration
 
 Everything is a frozen dataclass in `psx_desk/config.py`, overridable via `PSXDESK_*` env vars —
 see `.env.example` for the annotated list. The ones that matter most:
@@ -263,13 +348,19 @@ see `.env.example` for the annotated list. The ones that matter most:
 | `PSXDESK_MIN_REWARD_RISK` | `1.5` | Below this, the idea is rejected |
 | `PSXDESK_MAX_DEBATE_ROUNDS` | `2` | Bull/bear rounds |
 | `PSXDESK_OFFLINE` | `0` | Replay cache only, never touch the network |
+| `PSXDESK_MIRROR_POLICY` | `off` | `off` / `backfill` / `fallback` — the GitHub mirror tier |
+| `PSXDESK_GITHUB_MIRROR` | unset | Snapshot preset (`psx-data`) or `owner/repo` |
+| `PSXDESK_GITHUB_HISTORY_MIRROR` | unset | History preset (`psx-history`) or `owner/repo` |
+| `PSXDESK_MIRROR_MAX_STALENESS_DAYS` | `5` | Refuse a mirror snapshot older than this |
+| `PSXDESK_SESSION_CLOSE_MAX_LAG_DAYS` | `5` | A session close may not come from an older bar |
+| `PSXDESK_CA_BUNDLE` | unset | Corporate TLS bundle for a proxy that intercepts TLS |
 
 ---
 
-## 8. Tests
+## 9. Tests
 
 ```bash
-pytest -q          # 150 hermetic tests, no network, no API key
+pytest -q          # 198 hermetic tests, no network, no API key
 ruff check .
 ```
 
@@ -286,7 +377,7 @@ foreign vendor ever reappears.
 
 ---
 
-## 9. Known limits (stated, not hidden)
+## 10. Known limits (stated, not hidden)
 
 * Financial results are published by PSX as **PDFs**; the desk does not OCR them. It uses the
   disclosures list as evidence and leaves unreported metrics `null` with `data_quality="partial"`.
@@ -296,10 +387,14 @@ foreign vendor ever reappears.
 * The pure-Python `.Z` decoder is a fallback; the platform `uncompress` is preferred. The `.Z`
   `mkt_summary` dataset is optional — the primary board path is CSV/ZIP/JSON/HTML.
 * `PSXDESK_OFFLINE=1` replays the cache, which is what a backtest or a plane seat needs.
+* The GitHub mirrors are **community datasets**, not exchange files: the snapshot repo is refreshed
+  irregularly (its files were dated 2026-05-22 and 2026-08-19 during this build), and the history
+  dataset ends at its last rebuild. That is why the policy defaults to `off`, the staleness budget is
+  enforced, and a mirror-sourced packet can never be graded better than `partial`.
 
 ---
 
-## 10. Disclaimer
+## 11. Disclaimer
 
 Research tooling, not investment advice. Market data belongs to the Pakistan Stock Exchange;
 respect its terms of use, keep the throttle on, and do not redistribute the payloads. Nothing here

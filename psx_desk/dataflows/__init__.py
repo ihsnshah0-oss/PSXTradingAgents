@@ -18,8 +18,11 @@ __all__ = [
     "MarketRow",
     "build_desk_data",
     "build_market_packet",
+    "fetch_mirror_history",
     "ingest",
+    "mirror_catalog",
     "scrape_market_dump",
+    "scrape_psx_mirror",
 ]
 
 
@@ -28,6 +31,10 @@ def __getattr__(name: str) -> Any:  # pragma: no cover - trivial indirection
         from psx_desk.dataflows import ingest as _ingest
 
         return getattr(_ingest, name)
+    if name in {"fetch_mirror_history", "mirror_catalog", "scrape_psx_mirror"}:
+        from psx_desk.dataflows import github_mirror as _mirror
+
+        return getattr(_mirror, name)
     if name in {"MarketDump", "MarketDumpUnavailable", "MarketRow", "scrape_market_dump"}:
         from psx_desk.dataflows import portal as _portal
 

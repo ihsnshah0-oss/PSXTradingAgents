@@ -41,3 +41,25 @@ def test_node_sequence_matches_configured_rounds():
 
     config = load_config(max_debate_rounds=3)
     assert node_sequence(config).count("Bear Researcher") == 3
+
+
+def test_mirror_list_describes_both_presets(capsys):
+    assert main(["mirror", "list"]) == 0
+    out = capsys.readouterr().out
+    assert "bigbajwatv-alt/psx-data" in out
+    assert "Muhammad-Wasif/PSX-Stock-Market-Dataset" in out
+    assert "snapshot" in out and "history" in out
+
+
+def test_mirror_fetch_rejects_an_unknown_preset(capsys):
+    assert main(["mirror", "fetch", "SYS", "--mirror", "not-a-mirror"]) == 2
+    err = capsys.readouterr().err
+    assert "unknown mirror" in err
+
+
+def test_every_subcommand_is_reachable():
+    from psx_desk.cli import build_parser
+
+    parser = build_parser()
+    for argv in (["mirror", "fetch", "SYS"], ["mirror", "history", "SYS", "--days", "10"]):
+        assert parser.parse_args(argv).func.__name__ == "cmd_mirror"

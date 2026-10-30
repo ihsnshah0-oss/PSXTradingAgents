@@ -145,6 +145,17 @@ class MarketDump:
     datasets_used: tuple[str, ...] = ()
     rejected: tuple[str, ...] = ()
     missing_fields: tuple[str, ...] = ()
+    #: ``"owner/repo"`` when any price in this dump came from a GitHub mirror
+    #: (see :mod:`psx_desk.dataflows.github_mirror`).  ``None`` means every row
+    #: is straight off the exchange.
+    mirror: str | None = None
+    #: The session the mirror itself claims the snapshot belongs to.  It is
+    #: frequently *older* than ``trade_date``; downstream code must surface it.
+    mirror_as_of: date | None = None
+
+    @property
+    def from_mirror(self) -> bool:
+        return self.mirror is not None
 
     def __len__(self) -> int:
         return len(self.rows)

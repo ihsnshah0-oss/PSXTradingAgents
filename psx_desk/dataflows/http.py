@@ -108,9 +108,14 @@ class Transport(Protocol):
 
 
 class RequestsTransport:
-    """Keep-alive ``requests`` transport with a bounded connection pool."""
+    """Keep-alive ``requests`` transport with a bounded connection pool.
 
-    def __init__(self, pool_size: int = 8) -> None:
+    ``ca_bundle`` lets a desk behind a TLS-intercepting proxy (common inside a
+    Karachi brokerage's network) point at the organisation's CA file instead of
+    patching ``requests`` globally.
+    """
+
+    def __init__(self, pool_size: int = 8, *, ca_bundle: str | None = None) -> None:
         try:
             import requests
             from requests.adapters import HTTPAdapter
@@ -118,6 +123,7 @@ class RequestsTransport:
             raise PortalError("requests is required for live PSX access: pip install requests") from exc
 
         self._requests = requests
+        self._verify: str | bool = ca_bundle or True
         self._session = requests.Session()
         adapter = HTTPAdapter(pool_connections=pool_size, pool_maxsize=pool_size, max_retries=0)
         self._session.mount("https://", adapter)
@@ -130,7 +136,9 @@ class RequestsTransport:
 
     def get(self, url: str, *, timeout: float, headers: Mapping[str, str]) -> RawResponse:
         try:
-            resp = self._session.get(url, timeout=timeout, headers=dict(headers), stream=False)
+            resp = self._session.get(
+                url, timeout=timeout, headers=dict(headers), stream=False, verify=self._verify
+            )
         except Exception as exc:  # requests.RequestException without importing it
             raise NetworkError(f"GET {url} failed: {type(exc).__name__}: {exc}") from exc
         return RawResponse(
@@ -320,7 +328,7 @@ class PortalClient:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.config = config
-        self.transport = transport or RequestsTransport()
+        self.transport = transport or RequestsTransport(ca_bundle=config.ca_bundle)
         self.cache = cache if cache is not None else DiskCache(config.cache_dir)
         self._sleep = sleep
         self._clock = clock
@@ -351,14 +359,19 @@ class PortalClient:
         as_of: date | None = None,
         ttl_seconds: int | None = -1,
         allow_missing: bool = True,
+        allow_mirror: bool = False,
+        headers: Mapping[str, str] | None = None,
     ) -> Payload | None:
         """Fetch ``url``, or return ``None`` when PSX says it does not exist.
 
         ``ttl_seconds=-1`` uses the configured freshness window; ``None`` means
         "cached is fine regardless of age" (used for immutable date-keyed files).
+        ``allow_mirror`` widens the host allow-list to the read-only GitHub
+        mirror hosts; only the mirror scraper sets it.  ``headers`` are merged
+        over the desk defaults (used for a GitHub token).
         """
 
-        assert_source_allowed(url)
+        assert_source_allowed(url, allow_mirror=allow_mirror)
         self.probes.append(url)
         ttl = self.config.cache_ttl_seconds if ttl_seconds == -1 else ttl_seconds
 
@@ -369,7 +382,7 @@ class PortalClient:
         if self.config.offline:
             raise OfflineDataMissing(f"offline mode: {url} is not in the local cache")
 
-        response = self._fetch_with_retries(url)
+        response = self._fetch_with_retries(url, extra_headers=headers)
         if response.status == 404:
             if allow_missing:
                 logger.info("PSX has no payload at %s", url)
@@ -419,12 +432,16 @@ class PortalClient:
 
     # -- internals -------------------------------------------------------- #
 
-    def _fetch_with_retries(self, url: str) -> RawResponse:
+    def _fetch_with_retries(
+        self, url: str, *, extra_headers: Mapping[str, str] | None = None
+    ) -> RawResponse:
         headers = {
             "User-Agent": self.config.user_agent,
             "Referer": "https://www.psx.com.pk/",
             "Accept": "*/*",
         }
+        if extra_headers:
+            headers.update(extra_headers)
         last: RawResponse | None = None
         for attempt in range(self.config.http_retries):
             self._wait_turn()

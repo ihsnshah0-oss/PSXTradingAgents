@@ -8,17 +8,38 @@ This is the only node allowed to talk to the network, and it is the only node
 that can fail a run for lack of data.  Everything downstream is a pure function
 of the packet, which is why the analysts cannot quietly reach for a number PSX
 did not publish.
+
+GitHub mirrors
+--------------
+When ``PSXDESK_MIRROR_POLICY`` is ``backfill`` or ``fallback`` this node may
+also consult a GitHub mirror (see
+:mod:`psx_desk.dataflows.github_mirror`).  The rules the code enforces:
+
+* ``off`` (default): the mirror module is never imported or called.
+* ``backfill``: the mirror only fills reference fields — sector, company name,
+  index levels — never a price, never a bar.
+* ``fallback``: if PSX is unreachable the mirror may supply prices and bars, but
+  the packet is forced to ``data_quality="partial"``, every mirror source lands
+  in ``sources`` with ``source_kind="mirror"``, and a note records the
+  repository and its own snapshot date so a stale mirror can never pass as
+  today's tape.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 
 from psx_desk.config import DeskConfig
 from psx_desk.dataflows.disclosures import DefaulterIndex, fetch_disclosures, load_defaulter_index
+from psx_desk.dataflows.github_mirror import (
+    fetch_mirror_history,
+    mirror_indices,
+    mirror_symbol_info,
+    scrape_psx_mirror,
+)
 from psx_desk.dataflows.http import PortalClient, PortalError
 from psx_desk.dataflows.macro import fetch_macro_backdrop
 from psx_desk.dataflows.portal import (
@@ -74,6 +95,17 @@ class DeskData:
     def indices(self, as_of: date) -> list[IndexSnapshot]:
         if self._indices is None:
             self._indices = fetch_indices(self.client, as_of=as_of)
+            if not self._indices and self.config.mirror_policy == "fallback":
+                spec = self.config.github_mirror
+                if spec:
+                    try:
+                        snaps = mirror_indices(spec, config=self.config, client=self.client)
+                    except (PortalError, ValueError) as exc:
+                        logger.info("mirror indices unavailable: %s", exc)
+                    else:
+                        self._indices = {
+                            snap.symbol: snap for snap in snaps if snap.symbol in INDEX_PROXIES
+                        }
         return list(self._indices.values())
 
 
@@ -130,6 +162,33 @@ def _load_board(
             f"Probed: {len(exc.rejected)} endpoints."
         )
         logger.info("board unavailable for %s: %s", trade_date, exc)
+        spec = data.config.github_mirror if data.config.mirror_policy == "fallback" else None
+        if spec:
+            try:
+                mirror_dump = scrape_psx_mirror(
+                    spec,
+                    symbols=[symbol],
+                    config=data.config,
+                    client=data.client,
+                    via=data.config.github_via,
+                    as_of=trade_date,
+                )
+            except (PortalError, ValueError) as mirror_exc:
+                notes.append(f"GitHub mirror {spec} also unavailable: {mirror_exc}")
+                logger.info("mirror %s unavailable: %s", spec, mirror_exc)
+                return None, None
+            as_of_text = mirror_dump.mirror_as_of.isoformat() if mirror_dump.mirror_as_of else "undated"
+            notes.append(
+                f"PSX board unavailable: prices supplied by the GitHub mirror {mirror_dump.mirror} "
+                f"(its own snapshot date {as_of_text}). Mirror data is community-maintained, "
+                "not exchange-verified."
+            )
+            if mirror_dump.mirror_as_of and mirror_dump.mirror_as_of < trade_date:
+                notes.append(
+                    f"Mirror snapshot is {trade_date - mirror_dump.mirror_as_of} day(s) older than "
+                    f"the requested session {trade_date.isoformat()}; treat the close as indicative."
+                )
+            return mirror_dump.get(symbol), mirror_dump
         return None, None
     row = dump.get(symbol)
     if row is None:
@@ -153,7 +212,29 @@ def _history_for(
     except (PortalError, TimeseriesUnavailable, ValueError) as exc:
         notes.append(f"DPS timeseries unavailable for {symbol}: {exc}")
         logger.warning("timeseries unavailable for %s: %s", symbol, exc)
-        return None
+        spec = data.config.github_history_mirror if data.config.mirror_policy == "fallback" else None
+        if not spec:
+            return None
+        try:
+            history = fetch_mirror_history(
+                symbol,
+                mirror=spec,
+                config=data.config,
+                client=data.client,
+                via=data.config.github_via,
+                as_of=trade_date,
+                days=data.config.history_days,
+            )
+        except (PortalError, ValueError) as mirror_exc:
+            notes.append(f"GitHub history mirror {spec} also unavailable for {symbol}: {mirror_exc}")
+            return None
+        first = history.bars[0].trade_date.isoformat() if history.bars else "n/a"
+        last = history.bars[-1].trade_date.isoformat() if history.bars else "n/a"
+        notes.append(
+            f"Daily bars for {symbol} taken from the GitHub history dataset {spec} "
+            f"({len(history.bars)} bars, {first} to {last}); third-party reconstruction."
+        )
+        return history
 
 
 def _history_dicts(history: PriceHistory | None) -> list[dict]:
@@ -195,6 +276,32 @@ def build_market_packet(
     if dump is not None:
         sources.extend(dump.sources)
 
+    # Reference-only backfill: a mirror may name a sector, never price a scrip.
+    if (
+        row is not None
+        and data.config.mirror_policy in {"backfill", "fallback"}
+        and data.config.github_mirror
+        and (row.sector is None or row.company_name is None)
+    ):
+        try:
+            directory = mirror_symbol_info(
+                data.config.github_mirror, config=data.config, client=data.client
+            )
+        except (PortalError, ValueError) as exc:
+            notes.append(f"Mirror reference directory unavailable: {exc}")
+        else:
+            info = directory.get(sym)
+            if info is not None:
+                row = replace(
+                    row,
+                    sector=row.sector or info.sector,
+                    company_name=row.company_name or info.name,
+                )
+                notes.append(
+                    f"Sector/company metadata backfilled from the GitHub mirror "
+                    f"{data.config.github_mirror}; prices remain PSX-sourced."
+                )
+
     history = _history_for(sym, trade_date, data, notes)
     if history is not None and history.source is not None:
         sources.append(history.source)
@@ -204,6 +311,23 @@ def build_market_packet(
         raise IngestionError(
             f"PSX published no usable price for {sym} on {trade_date.isoformat()}. "
             f"Notes: {'; '.join(notes) or 'no detail'}"
+        )
+    # Without a board row the close can only come from the last bar.  That bar is
+    # older than the session whenever a feed lags (a stale mirror, a PSX outage,
+    # a weekend backfill), and it must not be presented as the session's print.
+    if not (row and row.close) and history is not None and history.latest is not None:
+        lag = (trade_date - history.latest.trade_date).days
+        if lag > data.config.session_close_max_lag_days:
+            raise IngestionError(
+                f"No {sym} close for {trade_date.isoformat()}: the most recent bar is "
+                f"{history.latest.trade_date.isoformat()} ({lag} days earlier) and the desk's "
+                f"limit is {data.config.session_close_max_lag_days} days "
+                "(PSXDESK_SESSION_CLOSE_MAX_LAG_DAYS). Refusing to quote a stale close. "
+                f"Notes: {'; '.join(notes) or 'no detail'}"
+            )
+        notes.append(
+            f"Close carried from the {history.latest.trade_date.isoformat()} bar "
+            f"({lag} day(s) before the requested session); no board row was published."
         )
 
     bars = _history_dicts(history)
@@ -318,6 +442,12 @@ def build_market_packet(
     if adv_shares is None:
         missing.add("adv_shares_20d")
 
+    mirror_sources = [ref for ref in sources if ref.source_kind == "mirror"]
+    if dump is not None and dump.from_mirror:
+        missing.add("exchange_verified_prices")
+    if history is not None and history.source is not None and history.source.source_kind == "mirror":
+        missing.add("exchange_verified_history")
+
     quality = _grade_quality(
         board_ok=row is not None and bool(row.close),
         history_bars=len(history.bars) if history else 0,
@@ -325,6 +455,17 @@ def build_market_packet(
         macro=macro,
         defaulter_checked=defaulter.checked,
     )
+    if mirror_sources:
+        # A mirror can never upgrade a packet: the best it can be is partial.
+        if quality is DataQuality.VERIFIED:
+            quality = DataQuality.PARTIAL
+        repos = sorted({repo for ref in mirror_sources if (repo := _mirror_repo(ref.url))})
+        notes.append(
+            "Packet includes GitHub mirror data ("
+            + ", ".join(repos or ["unrecognised mirror"])
+            + f"); {len(mirror_sources)} mirror source(s) recorded in sources. "
+            "Mirror payloads are community-maintained and not exchange-verified."
+        )
     if quality is DataQuality.STALE:
         notes.append("Session data is older than the requested trade date.")
     if quality is DataQuality.PARTIAL:
@@ -369,6 +510,21 @@ def _grade_quality(
     if missing:
         return DataQuality.PARTIAL
     return DataQuality.VERIFIED
+
+
+def _mirror_repo(url: str) -> str | None:
+    """``owner/repo`` for a GitHub mirror URL, whatever access path produced it."""
+
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    host = (parsed.hostname or "").lower()
+    if "githubusercontent" in host or "codeload" in host:
+        return "/".join(parts[:2]) if len(parts) >= 2 else None
+    if host == "api.github.com" and len(parts) >= 3 and parts[0] == "repos":
+        return f"{parts[1]}/{parts[2]}"
+    return None
 
 
 def _dedupe_sources(sources: Sequence[SourceRef]) -> list[SourceRef]:

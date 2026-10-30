@@ -6,6 +6,13 @@
     psx-desk schema allocation         # the strict JSON schema the CRO must satisfy
     psx-desk describe                  # the LangGraph pipeline
     psx-desk doctor                    # dependency / key / PSX reachability checks
+    psx-desk mirror list               # GitHub mirrors this build knows about
+    psx-desk mirror fetch SYS          # whole-board snapshot from a GitHub mirror
+    psx-desk mirror history SYS        # daily bars from the GitHub history dataset
+
+Mirror output is always printed with a loud "not exchange-verified" banner: it is
+a labelled backstop for machines that cannot reach ``dps.psx.com.pk``, never a
+substitute for the exchange's own file.
 """
 
 from __future__ import annotations
@@ -19,6 +26,13 @@ from datetime import date
 from psx_desk import __version__
 from psx_desk.agents.llm import StructuredOutputError
 from psx_desk.config import load_config
+from psx_desk.dataflows.github_mirror import (
+    DEFAULT_HISTORY_MIRROR,
+    DEFAULT_SNAPSHOT_MIRROR,
+    fetch_mirror_history,
+    mirror_catalog,
+    scrape_psx_mirror,
+)
 from psx_desk.dataflows.http import PortalError
 from psx_desk.dataflows.ingest import (
     IngestionError,
@@ -96,6 +110,82 @@ def _packet_summary(packet) -> str:
     return "\n".join(lines)
 
 
+MIRROR_BANNER = (
+    "!! GitHub mirror data -- community-maintained, NOT exchange-verified. "
+    "Use only as a labelled fallback."
+)
+
+
+def cmd_mirror(args: argparse.Namespace) -> int:
+    if args.mirror_command == "list":
+        for entry in mirror_catalog():
+            print(f"{entry['key']:<12} {entry['kind']:<9} {entry['repo']}")
+            print(f"{'':<12} ref={entry['ref']}  licence={entry['licence']}")
+            print(f"{'':<12} files={', '.join(entry['files'])}")
+            print(f"{'':<12} {entry['note']}")
+        return 0
+
+    config = load_config()
+    if args.mirror_command == "fetch":
+        spec = args.mirror or config.github_mirror or DEFAULT_SNAPSHOT_MIRROR
+        dump = scrape_psx_mirror(
+            spec,
+            symbols=[args.symbol],
+            config=config,
+            via=args.via or config.github_via,
+            as_of=_date(args.as_of),
+        )
+        print(MIRROR_BANNER, file=sys.stderr)
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "mirror": dump.mirror,
+                        "mirror_as_of": dump.mirror_as_of,
+                        "trade_date": dump.trade_date,
+                        "missing_fields": list(dump.missing_fields),
+                        "rows": [row.as_dict() for row in dump.rows.values()],
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
+            return 0
+        print(f"mirror {dump.mirror}  snapshot {dump.mirror_as_of or 'undated'}")
+        for row in dump.rows.values():
+            print(
+                f"  {row.symbol:<10} close PKR {row.close:,.2f}"
+                + (f"  prev {row.prev_close:,.2f}" if row.prev_close else "")
+                + (f"  vol {row.volume:,.0f}" if row.volume else "")
+                + (f"  {row.sector}" if row.sector else "")
+            )
+        print(f"  missing: {', '.join(dump.missing_fields) or 'none'}")
+        for note in dump.rejected:
+            print(f"  note: {note}")
+        return 0
+
+    spec = args.mirror or config.github_history_mirror or DEFAULT_HISTORY_MIRROR
+    history = fetch_mirror_history(
+        args.symbol,
+        mirror=spec,
+        config=config,
+        via=args.via or config.github_via,
+        as_of=_date(args.as_of),
+        days=args.days,
+    )
+    print(MIRROR_BANNER, file=sys.stderr)
+    if args.json:
+        print(json.dumps({"symbol": history.symbol, "bars": history.as_dicts()}, indent=2))
+        return 0
+    print(f"mirror {spec}  {history.symbol}: {len(history.bars)} bars ({history.quality.value})")
+    for bar in history.bars[-10:]:
+        print(
+            f"  {bar.trade_date}  close {bar.close:,.2f}"
+            + (f"  vol {bar.volume:,.0f}" if bar.volume else "")
+        )
+    return 0
+
+
 def cmd_schema(args: argparse.Namespace) -> int:
     model = SCHEMAS[args.model]
     print(json.dumps(model.model_json_schema(), indent=2))
@@ -152,6 +242,22 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
             ok = False
             print(f"  [miss] psx.com.pk unreachable: {exc}")
+    if config.github_mirror or config.mirror_policy != "off":
+        if config.github_mirror is None:
+            print("  [miss] mirror policy is on but PSXDESK_GITHUB_MIRROR is unset")
+        else:
+            from psx_desk.dataflows.github_mirror import mirror_available
+
+            if mirror_available(config.github_mirror, config=config):
+                print(f"  [ok]   GitHub mirror {config.github_mirror} answers (fallback tier)")
+            else:
+                print(
+                    f"  [warn] GitHub mirror {config.github_mirror} unreachable "
+                    "(optional fallback tier; PSX remains primary)"
+                )
+    else:
+        print("  [info] GitHub mirror tier disabled (PSX/SBP only)")
+
     print("\nstatus:", "ready" if ok else "not ready")
     return 0 if ok else 1
 
@@ -187,6 +293,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = sub.add_parser("doctor", help="check dependencies, key and PSX reachability")
     doctor.set_defaults(func=cmd_doctor)
+
+    mirror = sub.add_parser("mirror", help="GitHub data mirrors (labelled fallback tier)")
+    mirror_sub = mirror.add_subparsers(dest="mirror_command", required=True)
+    mirror_list = mirror_sub.add_parser("list", help="list the known mirror presets")
+    mirror_list.set_defaults(func=cmd_mirror)
+    for name, helptext in (
+        ("fetch", "whole-board snapshot from a mirror, one scrip"),
+        ("history", "daily OHLCV bars from the history dataset"),
+    ):
+        child = mirror_sub.add_parser(name, help=helptext)
+        child.add_argument("symbol")
+        child.add_argument("--mirror", default=None, help="preset key or owner/repo")
+        child.add_argument("--as-of", default=None, help="session date, YYYY-MM-DD")
+        child.add_argument("--via", default=None, choices=["auto", "raw", "api", "tarball"])
+        child.add_argument("--json", action="store_true")
+        if name == "history":
+            child.add_argument("--days", type=int, default=None)
+        child.set_defaults(func=cmd_mirror)
 
     return parser
 

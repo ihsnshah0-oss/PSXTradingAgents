@@ -16,6 +16,10 @@ Local realism notes
   source URL.  If the live SBP scrape is unavailable the desk uses these
   labelled defaults and the Fundamental Analyst must treat the rate as
   ``stale`` instead of inventing a number.
+* ``mirror_policy`` governs the GitHub mirror tier documented in
+  :mod:`psx_desk.dataflows.github_mirror`.  It is ``off`` by default: the desk
+  reads PSX directly, and a mirror is only a labelled backstop for machines
+  that cannot reach ``dps.psx.com.pk``.
 """
 
 from __future__ import annotations
@@ -141,6 +145,21 @@ class DeskConfig:
         "PSXDesk/1.0 (institutional research; +https://www.psx.com.pk)"
     )
     offline: bool = False                  # replay fixtures / cache only
+    ca_bundle: str | None = None           # TLS bundle for a corporate proxy
+
+    # --- GitHub mirror tier (opt-in, always labelled) ---------------------
+    # off       : PSX/SBP only (default; the documented guarantee)
+    # backfill  : PSX prices stay authoritative; the mirror only fills
+    #             reference fields (sector, company name, index membership)
+    # fallback  : when PSX is unreachable, the mirror supplies prices too, and
+    #             the packet is forced to data_quality="partial"
+    mirror_policy: str = "off"
+    github_mirror: str | None = None        # snapshot preset or "owner/repo"
+    github_history_mirror: str | None = None  # history preset or "owner/repo"
+    github_token: str | None = None         # raises the GitHub API rate limit
+    github_via: str = "auto"                # auto | raw | api | tarball
+    mirror_max_staleness_days: int = 5       # refuse a snapshot older than this
+    session_close_max_lag_days: int = 5       # a session close may not come from an older bar
 
     # --- Desk -------------------------------------------------------------
     macro: MacroDefaults = field(default_factory=MacroDefaults)
@@ -184,6 +203,14 @@ def load_config(**overrides) -> DeskConfig:
         cache_ttl_seconds=_env_int("CACHE_TTL_SECONDS", 900),
         max_workers=_env_int("MAX_WORKERS", 6),
         offline=_env_flag("OFFLINE", False),
+        ca_bundle=_env("CA_BUNDLE") or os.getenv("REQUESTS_CA_BUNDLE"),
+        mirror_policy=_env("MIRROR_POLICY", "off").strip().lower(),
+        github_mirror=_env("GITHUB_MIRROR"),
+        github_history_mirror=_env("GITHUB_HISTORY_MIRROR"),
+        github_token=_env("GITHUB_TOKEN") or os.getenv("GITHUB_TOKEN"),
+        github_via=_env("GITHUB_VIA", "auto"),
+        mirror_max_staleness_days=_env_int("MIRROR_MAX_STALENESS_DAYS", 5),
+        session_close_max_lag_days=_env_int("SESSION_CLOSE_MAX_LAG_DAYS", 5),
         max_debate_rounds=_env_int("MAX_DEBATE_ROUNDS", 2),
         history_days=_env_int("HISTORY_DAYS", 400),
         work_dir=Path(_env("WORK_DIR", str(DEFAULT_WORK_DIR))),
@@ -237,3 +264,18 @@ def validate_config(cfg: DeskConfig) -> None:
         raise ValueError("min_reward_risk must be positive")
     if cfg.macro.sbp_policy_rate_pct <= 0:
         raise ValueError("sbp_policy_rate_pct must be positive")
+    if cfg.mirror_policy not in {"off", "backfill", "fallback"}:
+        raise ValueError(
+            f"mirror_policy must be one of off|backfill|fallback, not {cfg.mirror_policy!r}"
+        )
+    if cfg.session_close_max_lag_days < 0:
+        raise ValueError("session_close_max_lag_days must be >= 0")
+    if cfg.mirror_max_staleness_days < 0:
+        raise ValueError("mirror_max_staleness_days must be >= 0")
+    if cfg.github_via not in {"auto", "raw", "api", "tarball"}:
+        raise ValueError(f"github_via must be one of auto|raw|api|tarball, not {cfg.github_via!r}")
+    if cfg.mirror_policy != "off" and not (cfg.github_mirror or cfg.github_history_mirror):
+        raise ValueError(
+            "mirror_policy is enabled but no mirror is configured; "
+            "set PSXDESK_GITHUB_MIRROR (e.g. psx-data)"
+        )
