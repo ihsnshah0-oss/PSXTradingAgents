@@ -1,3 +1,3 @@
-# The dependencies are declared in pyproject.toml. From the repository root this
-# installs TradingAgents with them, the same as `pip install .`
+# Runtime dependencies live in pyproject.toml. From the repository root this
+# installs the desk and everything it needs, exactly like `pip install .`:
 .

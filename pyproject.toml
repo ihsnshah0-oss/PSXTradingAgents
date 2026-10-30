@@ -1,89 +1,72 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tradingagents"
-dynamic = ["version"]
-description = "TradingAgents: Multi-Agents LLM Financial Trading Framework"
+name = "psx-desk"
+version = "1.0.0"
+description = "Autonomous PSX-only multi-agent trading desk (Pakistan Stock Exchange, Karachi)"
 readme = "README.md"
 requires-python = ">=3.11"
+license = { file = "LICENSE" }
+keywords = ["psx", "pakistan-stock-exchange", "langgraph", "multi-agent", "equity-research", "karachi"]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
 dependencies = [
-    "cryptography>=42.0",
-    "langchain-core>=1.6.5",
-    "langchain-anthropic>=1.7.4",
-    "langchain-google-genai>=4.4.0",
-    "langchain-openai>=1.6.6",
-    "langgraph>=1.2.12",
-    "langgraph-checkpoint-sqlite>=3.1.1",
-    "markdown-it-py>=4.0",
-    "packaging>=24.0",
-    "pandas>=3.0.6",
-    "python-dotenv>=1.0.0",
-    "pytz>=2025.2",
-    "questionary>=2.1.0",
-    "requests>=2.32.4",
-    "rich>=14.0.0",
-    "typer>=0.21.0",
-    "stockstats>=0.6.5",
-    "typing-extensions>=4.14.0",
-    "yfinance>=1.7.0",
+    # Typed contracts for every node (structured output).
+    "pydantic>=2.7",
+    # LangGraph state machine + LangChain message plumbing.
+    "langgraph>=0.2.60",
+    "langchain-core>=0.3.20",
+    # Official Google Gen AI SDK (the default structured-output backend).
+    "google-genai>=1.0",
+    # Scraping PSX: requests + a keep-alive pool; pandas for vectorised indicators.
+    "requests>=2.32",
+    "pandas>=2.2",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "ruff>=0.16",
-    "pytest>=8.0",
-    "pytest-subtests>=0.13",
+# Alternate structured-output backend via langchain chat models.
+langchain = [
+    "langchain-google-genai>=2.0",
 ]
-# Amazon Bedrock support (AWS SigV4 auth + boto3). Optional so the core install
-# stays lean: pip install "tradingagents[bedrock]".
-bedrock = [
-    "langchain-aws>=1.7.9",
+openai = ["langchain-openai>=0.2"]
+anthropic = ["langchain-anthropic>=0.2"]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
 ]
 
 [project.scripts]
-tradingagents = "cli.main:app"
-
-[tool.setuptools.dynamic]
-version = {attr = "tradingagents.__version__"}
+psx-desk = "psx_desk.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["tradingagents*", "cli*"]
-
-[tool.setuptools.package-data]
-cli = ["static/*"]
-tradingagents = ["assets/*.svg"]
+include = ["psx_desk*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers -m \"not integration\""
+addopts = "-ra --strict-markers -m 'not integration'"
 markers = [
-    "unit: fast isolated unit tests",
-    "integration: tests requiring external services; run only when asked for, with -m integration",
-    "smoke: quick sanity-check tests",
+    "unit: fast, hermetic tests driven by recorded PSX payloads",
+    "integration: tests that would touch psx.com.pk / sbp.org.pk (never run by default)",
 ]
-filterwarnings = [
-    "ignore::DeprecationWarning",
-]
+filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-exclude = ["results"]
+extend-exclude = ["var"]
 
 [tool.ruff.lint]
-# Standard "good defaults" rule set (pyflakes + pycodestyle + isort + bugbear +
-# pyupgrade + comprehensions/simplify). Line length (E501) and layout are owned
-# by the formatter; whole-repo `ruff format` adoption is deferred until the
-# open-PR backlog clears, to avoid mass merge conflicts.
 select = ["E", "W", "F", "I", "B", "UP", "C4", "SIM"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-"**/__init__.py" = ["F401"]   # intentional re-exports
-
-[tool.ruff.lint.isort]
-# Keep multiple aliased names from one module in a single combined import block
-# (e.g. the vendor imports in router.py) instead of one statement per name.
-combine-as-imports = true
+"**/__init__.py" = ["F401"]
+"tests/*" = ["B011"]

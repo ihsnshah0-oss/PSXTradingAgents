@@ -1,16 +1,33 @@
-from tradingagents.default_config import DEFAULT_CONFIG
-from tradingagents.graph.trading_graph import TradingAgentsGraph
+"""Run the PSX desk for one scrip.
 
-# DEFAULT_CONFIG already applies TRADINGAGENTS_* env-var overrides
-# (llm_provider, deep_think_llm, quick_think_llm, backend_url, etc.),
-# so users can switch models or endpoints purely via .env without
-# editing this script. Override individual keys here only when you
-# want a hard-coded value that should ignore the environment.
-config = DEFAULT_CONFIG.copy()
+    python main.py                 # ENGRO, today's Karachi session
+    python main.py SYS 2026-10-29  # explicit symbol and date
 
-# Initialize with custom config
-ta = TradingAgentsGraph(debug=True, config=config)
+The full pipeline writes var/runs/<symbol>_<date>_<id>/{note.md,allocation.json,run.json}.
+"""
 
-# forward propagate
-_, decision = ta.propagate("NVDA", "2026-09-01")
-print(decision)
+from __future__ import annotations
+
+import sys
+
+from dotenv import load_dotenv
+
+from psx_desk.config import load_config
+from psx_desk.graph.desk import PSXTradingDesk
+from psx_desk.report import render_markdown
+
+
+def main(argv: list[str]) -> int:
+    load_dotenv()
+    symbol = argv[1] if len(argv) > 1 else "ENGRO"
+    trade_date = argv[2] if len(argv) > 2 else None
+
+    desk = PSXTradingDesk(load_config())
+    run = desk.run(symbol, trade_date)
+    print(render_markdown(run))
+    print("\nallocation JSON:\n" + run.allocation.to_json())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

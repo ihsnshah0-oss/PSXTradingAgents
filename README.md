@@ -1,425 +1,306 @@
-<p align="center">
-  <img src="tradingagents/assets/tauric-logo.svg" width="60%" alt="Tauric Research">
-</p>
+# PSX Trading Desk
 
-<div align="center" style="line-height: 1;">
-  <a href="https://arxiv.org/abs/2412.20138" target="_blank"><img alt="arXiv" src="https://img.shields.io/badge/arXiv-2412.20138-B31B1B?logo=arxiv"/></a>
-  <a href="https://discord.com/invite/hk9PGKShPK" target="_blank"><img alt="Discord" src="https://img.shields.io/badge/Discord-TradingResearch-7289da?logo=discord&logoColor=white&color=7289da"/></a>
-  <a href="https://x.com/TauricResearch" target="_blank"><img alt="X Follow" src="https://img.shields.io/badge/X-TauricResearch-white?logo=x&logoColor=white"/></a>
-  <a href="https://github.com/TauricResearch/" target="_blank"><img alt="Community" src="https://img.shields.io/badge/GitHub_Community-TauricResearch-14C290?logo=discourse"/></a>
-</div>
-<br>
-<div align="center">
-  <a href="https://github.com/TauricResearch" target="_blank"><img alt="TradingAgents #1 Repository of the Day" src="https://trendshift.io/api/badge/repositories/16192" width="250" height="55"/></a>
-</div>
-<br>
-<div align="center">
-  <!-- Keep these links. Translations will automatically update with the README. -->
-  <a href="https://www.readme-i18n.com/TauricResearch/TradingAgents?lang=de">Deutsch</a> | 
-  <a href="https://www.readme-i18n.com/TauricResearch/TradingAgents?lang=es">Español</a> | 
-  <a href="https://www.readme-i18n.com/TauricResearch/TradingAgents?lang=fr">français</a> | 
-  <a href="https://www.readme-i18n.com/TauricResearch/TradingAgents?lang=ja">日本語</a> | 
-  <a href="https://www.readme-i18n.com/TauricResearch/TradingAgents?lang=ko">한국어</a> | 
-  <a href="https://www.readme-i18n.com/TauricResearch/TradingAgents?lang=pt">Português</a> | 
-  <a href="https://www.readme-i18n.com/TauricResearch/TradingAgents?lang=ru">Русский</a> | 
-  <a href="https://www.readme-i18n.com/TauricResearch/TradingAgents?lang=zh">中文</a>
-</div>
+An autonomous, single-purpose multi-agent equity research desk for the **Pakistan Stock Exchange**,
+run out of a brokerage house on **Stock Exchange Road, Karachi**.
+
+Five LangGraph nodes, one exchange, one currency, one rulebook:
+
+```
+START
+  │
+  ▼
+① PSX Data Ingestion ──► ② PSX Technical Analyst ──► ③ PSX Fundamental Analyst
+                                                              │
+                                                              ▼
+                                                        ④ Bull Researcher
+                                                              │
+                                                              ▼
+                                                        Bear Researcher
+                                                              │
+                                          (rounds left?) ─────┴──► Bull Researcher
+                                                              │
+                                                              ▼
+                                                        ⑤ CRO Gatekeeper ──► END
+```
+
+| Node | What it does | Output (Pydantic) |
+| --- | --- | --- |
+| ① **PSX Data Ingestion** | Scrapes the real close, volume, circuit caps, disclosures, defaulters list and SBP backdrop | `PSXMarketPacket` |
+| ② **PSX Technical Analyst** | Momentum, price action and **daily circuit-lock surveillance** | `TechnicalReport` |
+| ③ **PSX Fundamental Analyst** | Corporate quality scored against **SBP policy rate, KIBOR and CPI** | `FundamentalReport` |
+| ④ **Bull vs Bear Researchers** | Adversarial debate over the same packet, N rounds | `DebateArgument` → `DebateTranscript` |
+| ⑤ **CRO Gatekeeper** | Free-float liquidity, Defaulter segment, circuit, sizing → **strict JSON allocation** | `AllocationStatement` |
+
+Every node returns a validated Pydantic model through `with_structured_output`. There is no
+free-text hand-off anywhere in the pipeline: a node either returns its schema or the run fails.
 
 ---
 
-# TradingAgents: Multi-Agents LLM Financial Trading Framework
+## 1. What was removed
 
-## News
+This repository used to be a US-centric framework. **The entire previous stack is gone** — Finnhub,
+SEC EDGAR, AlphaVantage, YFinance, Yahoo, StockTwits, Reddit, FRED, Polymarket and the multi-provider
+LLM zoo are all deleted, not disabled. `psx_desk/sources.py` is now the only place a URL is written
+down, and `assert_source_allowed()` rejects any host that is not `psx.com.pk`, `dps.psx.com.pk` or
+`sbp.org.pk` at call time — so a stray import cannot smuggle a foreign price into a report.
 
-<!-- news:start -->
-- [2026-10] **TradingAgents v0.7.1** released with decisions scored only on final closes and settled across long market holidays, a fix for model dates that could read filings made after the run date, and fixes to portfolios, prices, SEC statements and reports.
-- [2026-10] **TradingAgents v0.7.0** released with runs on your own ChatGPT Plus or Pro plan, backtests scored from the first close after each decision, a note at start-up when a newer release is out, and a wheel attached to each GitHub release.
-- [2026-10] **TradingAgents v0.6.0** released with reports saved as one HTML page, a provider per model tier so the managers and analysts can run on different models, past decisions settled for every ticker while the analysts work, and company news read from Yahoo search while Yahoo's news feed is down.
+`tests/test_source_discipline.py` enforces this by AST-scanning the package for vendor imports and by
+validating every URL literal against the allow-list.
 
-Full release notes are in [CHANGELOG.md](CHANGELOG.md).
+---
 
-<details>
-<summary>Earlier news</summary>
+## 2. Data sources (all real, all PSX/SBP)
 
-- [2026-09] **TradingAgents v0.5.2** released with parallel analysts for a faster analysis, a CLI that runs without prompts from flags such as `--ticker` and `--date`, the run's settings recorded in every report, and backtests that see only data published by each analysis date.
-- [2026-09] **TradingAgents v0.5.1** released with a package layout organised by what each module holds (import paths moved), optional Jev screening of social posts, GPT-6 Sol and Luna as the default models, and fixes to run isolation and SEC EDGAR statements.
-- [2026-09] **TradingAgents v0.5.0** released with point-in-time integrity across every dated path, SEC EDGAR fundamentals served as filed, backtesting over a ticker and date grid, portfolio-aware runs, and current model lineups across every provider.
-- [2026-08] **TradingAgents v0.4.0** released with look-ahead / point-in-time fixes across FRED macro, social sentiment, and the decision-log memory; clearer decision signals; working CLI checkpoint resume; Trader price grounding; and the GPT-5.6 and GLM-5.3 models.
-- [2026-07] **TradingAgents v0.3.1** released with correctness and stability fixes: Alpha Vantage look-ahead filtering, graph-router crash-safety, graph-shape-aware checkpoint resume, working crypto sentiment sources, a configurable LLM retry budget, Bedrock API-key auth, and Claude Sonnet 5 / Fable 5 support.
-- [2026-06] **TradingAgents v0.3.0** released with a verified data-access contract, an expanded provider registry (NVIDIA, Kimi, Groq, Mistral, Bedrock, and any OpenAI-compatible endpoint), FRED and Polymarket data vendors, a current-generation model catalog, and a CI gate.
-- [2026-05] **TradingAgents v0.2.5** released with the grounded Sentiment Analyst, GPT-5.5 etc. model coverage, Qwen/GLM/MiniMax dual-region support, `TRADINGAGENTS_*` env-var configurability with API-key auto-detection, remote Ollama support, non-US alpha benchmarks, and ticker path-traversal hardening.
-- [2026-04] **TradingAgents v0.2.4** released with structured-output agents (Research Manager, Trader, Portfolio Manager), LangGraph checkpoint resume, persistent decision log, DeepSeek/Qwen/GLM/Azure provider support, Docker, and a Windows UTF-8 encoding fix.
-- [2026-03] **TradingAgents v0.2.3** released with multi-language support, GPT-5.4 family models, unified model catalog, backtesting date fidelity, and proxy support.
-- [2026-03] **TradingAgents v0.2.2** released with GPT-5.4/Gemini 3.1/Claude 4.6 model coverage, five-tier rating scale, OpenAI Responses API, Anthropic effort control, and cross-platform stability.
-- [2026-02] **TradingAgents v0.2.0** released with multi-provider LLM support (GPT-5.x, Gemini 3.x, Claude 4.x, Grok 4.x) and improved system architecture.
-- [2026-01] **Trading-R1** [Technical Report](https://arxiv.org/abs/2509.11420) released, with [Terminal](https://github.com/TauricResearch/Trading-R1) expected to land soon.
+| Purpose | Endpoint | Format |
+| --- | --- | --- |
+| Daily closing board | `https://dps.psx.com.pk/download/{dataset}/{YYYY-MM-DD}.{ext}` | CSV / ZIP / `.Z` / PDF |
+| Exchange circuit caps | `/download/symbol_price/{date}.zip` | ZIP of CSV |
+| Company names | `/download/symbol_name/{date}.zip` | ZIP of CSV |
+| Daily quotations (whole market) | `/download/quote/{date}.pdf` | PDF |
+| PUCARS announcements | `/download/announce/{date}.pdf` | PDF |
+| Per-scrip daily OHLCV | `https://dps.psx.com.pk/timeseries/eod/{SYMBOL}` | JSON |
+| Per-scrip intraday tape | `https://dps.psx.com.pk/timeseries/int/{SYMBOL}` | JSON |
+| Live board | `https://dps.psx.com.pk/market-watch` | HTML table |
+| Symbol directory | `https://dps.psx.com.pk/symbols` | JSON |
+| Defaulters / Non-Compliant | `https://www.psx.com.pk/psx/resources-and-tools/Defaulting-Companies-Profile-Portal` | HTML |
+| Circuit-breaker rules in force | `https://www.psx.com.pk/psx/resources-and-tools/circuit-breakers` | HTML |
+| Company announcements | `https://www.psx.com.pk/psx/announcement/companies` | HTML |
+| Macro anchor | `https://www.sbp.org.pk/` (policy rate, corridor, CPI, USD/PKR) | HTML tiles |
 
-</details>
-<!-- news:end -->
+> **On `data_dump.csv`.** PSX does not publish one stable public `data_dump.csv`. Rather than
+> pretend it exists, `data_dump_candidates()` lists every URL that might serve a whole-market dump —
+> the canonical `/download/{dataset}/{date}.{ext}` files first, then legacy
+> `/download/history/data_dump.csv` paths, then the live board — and
+> `scrape_market_dump()` probes them in order, **accepting a payload only if it parses into a table
+> with a symbol column and a price column**. A probe that returns HTML, a PDF where a CSV was
+> expected, or a five-row sector summary is rejected with a recorded reason. Nothing is fabricated
+> when a probe fails; the caller gets an explicit `MarketDumpUnavailable` listing every URL and why
+> each was rejected.
 
-<div align="center">
+---
 
-🚀 [TradingAgents](#tradingagents-framework) | ⚡ [Installation & CLI](#installation-and-cli) | 🎬 [Demo](https://www.youtube.com/watch?v=90gr5lwjIho) | 📦 [Package Usage](#tradingagents-package) | 🤝 [Contributing](#contributing) | 📄 [Citation](#citation)
-
-</div>
-
-> 🎉 **TradingAgents** officially released! We have received numerous inquiries about the work, and we would like to express our thanks for the enthusiasm in our community.
->
-> So we decided to fully open-source the framework. Looking forward to building impactful projects with you!
-
-## TradingAgents Framework
-
-TradingAgents is a multi-agent trading framework that mirrors the dynamics of real-world trading firms. By deploying specialized LLM-powered agents: from fundamental analysts, sentiment experts, and technical analysts, to trader, risk management team, the platform collaboratively evaluates market conditions and informs trading decisions. Moreover, these agents engage in dynamic discussions to pinpoint the optimal strategy.
-
-<p align="center">
-  <img src="assets/schema.png" style="width: 100%; height: auto;">
-</p>
-
-> TradingAgents framework is designed for research purposes. Trading performance may vary based on many factors, including the chosen backbone language models, model temperature, trading periods, the quality of data, and other non-deterministic factors. [It is not intended as financial, investment, or trading advice.](https://tauric.ai/disclaimer/)
-
-Our framework decomposes complex trading tasks into specialized roles.
-
-### Analyst Team
-- Fundamentals Analyst: Evaluates company financials and performance metrics, identifying intrinsic values and potential red flags.
-- Sentiment Analyst: Aggregates news headlines, StockTwits, and Reddit chatter into a single sentiment read to gauge short-term market mood.
-- News Analyst: Monitors global news and macroeconomic indicators, interpreting the impact of events on market conditions.
-- Technical Analyst: Utilizes technical indicators (like MACD and RSI) to detect trading patterns and forecast price movements.
-
-The selected analysts work at the same time, each on its own tools, and the research debate starts once all of their reports are in.
-
-<p align="center">
-  <img src="assets/analyst.png" width="100%" style="display: inline-block; margin: 0 2%;">
-</p>
-
-### Researcher Team
-- Comprises both bullish and bearish researchers who critically assess the insights provided by the Analyst Team. Through structured debates, they balance potential gains against inherent risks.
-
-<p align="center">
-  <img src="assets/researcher.png" width="70%" style="display: inline-block; margin: 0 2%;">
-</p>
-
-### Trader Agent
-- Composes reports from the analysts and researchers to make informed trading decisions, determining the timing and magnitude of trades.
-
-<p align="center">
-  <img src="assets/trader.png" width="70%" style="display: inline-block; margin: 0 2%;">
-</p>
-
-### Risk Management and Portfolio Manager
-- Continuously evaluates portfolio risk by assessing market volatility, liquidity, and other risk factors. The risk management team evaluates and adjusts trading strategies, providing assessment reports to the Portfolio Manager for final decision.
-- The Portfolio Manager approves/rejects the transaction proposal. If approved, the order will be sent to the simulated exchange and executed.
-
-<p align="center">
-  <img src="assets/risk.png" width="70%" style="display: inline-block; margin: 0 2%;">
-</p>
-
-## Installation and CLI
-
-### Installation
-
-Clone TradingAgents:
-```bash
-git clone https://github.com/TauricResearch/TradingAgents.git
-cd TradingAgents
-```
-
-TradingAgents needs Python 3.11 or later. Create a virtual environment in any of your favorite environment managers:
-```bash
-conda create -n tradingagents python=3.13
-conda activate tradingagents
-```
-
-Or with [uv](https://docs.astral.sh/uv/):
-```bash
-uv venv --python 3.13
-source .venv/bin/activate
-```
-
-Install the package and its dependencies (`uv pip install .` with uv):
-```bash
-pip install .
-```
-
-### Docker
-
-Alternatively, run with Docker:
-```bash
-cp .env.example .env  # add your API keys
-docker compose run --rm tradingagents
-```
-
-After updating the repository, rebuild the image with `docker compose build`.
-
-Results, reports, the memory log and the cache live in the `tradingagents_data` volume. To keep them in a folder on the host instead, create the folder and point `TRADINGAGENTS_DATA_DIR` at it, in `.env` or the shell: `mkdir -p data && TRADINGAGENTS_DATA_DIR=./data docker compose run --rm tradingagents`.
-
-For local models with Ollama:
-```bash
-docker compose --profile ollama run --rm tradingagents-ollama
-```
-
-### Required APIs
-
-TradingAgents supports multiple LLM providers. Set the API key for your chosen provider:
-
-```bash
-export OPENAI_API_KEY=...          # OpenAI (GPT)
-export GOOGLE_API_KEY=...          # Google (Gemini)
-export ANTHROPIC_API_KEY=...       # Anthropic (Claude)
-export XAI_API_KEY=...             # xAI (Grok)
-export DEEPSEEK_API_KEY=...        # DeepSeek
-export DASHSCOPE_API_KEY=...       # Qwen (international, dashscope-intl.aliyuncs.com)
-export DASHSCOPE_CN_API_KEY=...    # Qwen (China, dashscope.aliyuncs.com)
-export ZHIPU_API_KEY=...           # GLM via Z.AI (international)
-export ZHIPU_CN_API_KEY=...        # GLM via BigModel (China, open.bigmodel.cn)
-export MINIMAX_API_KEY=...         # MiniMax (global, api.minimax.io)
-export MINIMAX_CN_API_KEY=...      # MiniMax (China, api.minimaxi.com)
-export OPENROUTER_API_KEY=...      # OpenRouter
-export MISTRAL_API_KEY=...         # Mistral
-export MOONSHOT_API_KEY=...        # Kimi (Moonshot)
-export GROQ_API_KEY=...            # Groq
-export NVIDIA_API_KEY=...          # NVIDIA NIM
-export FRED_API_KEY=...            # FRED macro data (free, optional)
-export ALPHA_VANTAGE_API_KEY=...   # Alpha Vantage
-export TYPESAFE_API_KEY=...        # Jev social-post screening (optional)
-```
-
-For Azure OpenAI, copy `.env.enterprise.example` to `.env.enterprise` and fill in your credentials. With Docker, put these keys in `.env` instead: the image does not include `.env` files.
-
-To run on your ChatGPT Plus or Pro plan instead of an API key, choose "Subscription" in the CLI's provider menu, or set `llm_provider: "chatgpt"`. Sign in once with `tradingagents login chatgpt`: it prints an address to open in your browser, which returns to this machine on `127.0.0.1`. When the browser runs on another machine, or TradingAgents runs in Docker (`docker compose run --rm tradingagents login chatgpt`), paste the address the browser ends up on. The sign-in is kept in `~/.tradingagents/chatgpt-auth.json`, and `tradingagents logout chatgpt` revokes it. Runs count toward your plan's usage limits, and the plan does not accept `temperature` or `max_tokens`.
-
-For AWS Bedrock, install the extra with `pip install ".[bedrock]"`, set `llm_provider: "bedrock"`, configure AWS credentials (environment variables, `~/.aws/credentials`, or an IAM role) and `AWS_DEFAULT_REGION`, and use a Bedrock model ID, e.g. `us.anthropic.claude-opus-5-5`.
-
-For local models, configure Ollama with `llm_provider: "ollama"`. The default endpoint is `http://localhost:11434/v1`; set `OLLAMA_BASE_URL` to point at a remote `ollama-serve`. Pull models with `ollama pull <name>`, and pick "Custom model ID" in the CLI for any model not listed by default.
-
-For any other OpenAI-compatible server (vLLM, LM Studio, llama.cpp, or a custom relay), use `llm_provider: "openai_compatible"` and set the endpoint via `backend_url` (or `TRADINGAGENTS_LLM_BACKEND_URL`), e.g. `http://localhost:8000/v1` for vLLM or `http://localhost:1234/v1` for LM Studio. The model is whatever your server serves. No key is needed for local servers; set `OPENAI_COMPATIBLE_API_KEY` when the endpoint requires one.
-
-With `TYPESAFE_API_KEY` set, the Sentiment Analyst screens StockTwits and Reddit posts with TypeSafe's Jev before reading them. Posts that are not about the company are dropped, and each source opens with a count of the remaining posts by stance: bullish, bearish, neutral, or unclear. Without the key, posts pass through unscreened. `jev-latest` moves with new releases; set `TYPESAFE_DEFAULT_MODEL` to a versioned ID such as `jev-1.13.0` to hold it fixed across runs. To reach Jev through OpenRouter, put an OpenRouter key in `TYPESAFE_API_KEY` and set `TYPESAFE_BASE_URL=https://openrouter.ai/api`.
-
-Alternatively, copy `.env.example` to `.env` and fill in your keys:
-```bash
-cp .env.example .env
-```
-
-### CLI Usage
-
-Launch the interactive CLI:
-```bash
-tradingagents          # installed command
-python -m cli.main     # alternative: run directly from source
-```
-You will see a screen where you can select your desired tickers, analysis date, LLM provider, research depth, and more. Your previous run's answers come back as the defaults, so pressing Enter accepts them. The `TRADINGAGENTS_*` variables in `.env` still skip their step entirely.
-
-To run without questions, for a scheduled job or a script, answer the per-run steps with flags and the rest with `TRADINGAGENTS_*` variables:
-```bash
-export TRADINGAGENTS_LLM_PROVIDER=openai TRADINGAGENTS_QUICK_THINK_LLM=gpt-6-luna TRADINGAGENTS_DEEP_THINK_LLM=gpt-6-sol
-export TRADINGAGENTS_OUTPUT_LANGUAGE=English TRADINGAGENTS_MAX_DEBATE_ROUNDS=1 TRADINGAGENTS_MAX_RISK_ROUNDS=1
-tradingagents --ticker NVDA --date 2026-09-23 --analysts market,news,fundamentals --save --no-show
-```
-Each flag skips only its own question. Run without a terminal, a missing answer stops the run before it starts and names the flag or variable to set.
-
-At start-up the interactive CLI mentions a newer release and notices from Tauric Research. It checks at most once a day, in the background, and sends nothing about your runs; set `TRADINGAGENTS_NO_UPDATE_CHECK=1` to turn it off. Runs without a terminal never check.
-
-A saved report also includes `complete_report.html`, the report as one page with its sections listed beside the text, for reading in a browser, on a phone or in print. Answering the save question at the prompt also asks about the page and can open it in your browser; `--no-html` skips it, and so does `ta.save_reports(state, "NVDA", html=False)` from Python.
-
-### Markets and tickers
-
-TradingAgents works with any market Yahoo Finance covers, using the exchange-suffixed ticker. Company identity and the alpha benchmark resolve automatically per market.
-
-- US: `AAPL`, `SPY`
-- Hong Kong: `0700.HK` · Tokyo: `7203.T` · London: `AZN.L`
-- India: `RELIANCE.NS`, `.BO` · Canada: `.TO` · Australia: `.AX`
-- China A-shares: Shanghai `.SS`, Shenzhen `.SZ` (e.g. `600519.SS` for Kweichow Moutai)
-- Crypto: `BTC-USD`, `ETH-USD`
-
-<p align="center">
-  <img src="assets/cli/cli_init.png" width="100%" style="display: inline-block; margin: 0 2%;">
-</p>
-
-An interface will appear showing results as they load, letting you track the agent's progress as it runs.
-
-<p align="center">
-  <img src="assets/cli/cli_news.png" width="100%" style="display: inline-block; margin: 0 2%;">
-</p>
-
-<p align="center">
-  <img src="assets/cli/cli_transaction.png" width="100%" style="display: inline-block; margin: 0 2%;">
-</p>
-
-## TradingAgents Package
-
-### Implementation Details
-
-We built TradingAgents with LangGraph to ensure flexibility and modularity. The framework supports multiple LLM providers: OpenAI, Google, Anthropic, xAI, DeepSeek, Qwen (Alibaba DashScope, international and China endpoints), GLM (Zhipu), MiniMax (global + China), OpenRouter, Ollama for local models, Azure OpenAI for enterprise, and your own ChatGPT plan.
-
-### Python Usage
-
-To use TradingAgents inside your code, you can import the `tradingagents` module and initialize a `TradingAgentsGraph()` object. The `.propagate()` function will return a decision. You can run `main.py`, here's also a quick example:
+## 3. The scraper
 
 ```python
-from tradingagents.graph.trading_graph import TradingAgentsGraph
-from tradingagents.default_config import DEFAULT_CONFIG
+from datetime import date
+from psx_desk.dataflows.portal import scrape_market_dump
 
-ta = TradingAgentsGraph(debug=True, config=DEFAULT_CONFIG.copy())
+dump = scrape_market_dump(date(2026, 10, 29))          # whole board
+dump = scrape_market_dump(date(2026, 10, 29), symbols=["SYS", "ENGRO"])
 
-# forward propagate
-state, decision = ta.propagate("NVDA", "2026-09-01")
-print(decision)
+row = dump.get("SYS")
+row.close, row.upper_cap, row.lower_cap, row.volume
+dump.sources            # every payload read, with SHA-256 and retrieval time
+dump.missing_fields     # what PSX did not publish — never estimated
+dump.rejected           # "url :: reason" for every probe that failed
 
-# the same report tree the CLI saves, under results_dir/reports
-ta.save_reports(state, "NVDA")
+dump.to_frame()         # pandas, only if you ask for it
 ```
 
-You can also adjust the default configuration to set your own choice of LLMs, debate rounds, etc.
+How it stays fast and honest:
 
-```python
-from tradingagents.graph.trading_graph import TradingAgentsGraph
-from tradingagents.default_config import DEFAULT_CONFIG
+* one `requests.Session` with a keep-alive pool, a shared polite interval between hits and bounded
+  concurrency (`PSXDESK_THROTTLE_SECONDS`, `PSXDESK_MAX_WORKERS`);
+* date-keyed files are immutable, so they are cached permanently; the live board has a short TTL;
+* `symbols=` filters while parsing, so memory is O(wanted) instead of O(board);
+* each archive member is streamed straight into the delimited reader; parsing stops at the first
+  payload that yields a usable board;
+* the exchange's own `symbol_price` caps and `symbol_name` names are left-joined onto the price
+  board by symbol, and **exchange caps always beat a computed band**;
+* a response is recorded with its SHA-256 so a report can be audited back to bytes.
 
-config = DEFAULT_CONFIG.copy()
-config["llm_provider"] = "openai"        # e.g. openai, google, anthropic, deepseek, groq, ollama; openai_compatible covers any OpenAI-compatible endpoint (vLLM, LM Studio, llama.cpp, ...)
-config["deep_think_llm"] = "gpt-6-sol"    # Model for complex reasoning
-config["quick_think_llm"] = "gpt-6-luna"   # Model for quick tasks
-config["max_debate_rounds"] = 2
+`psx_desk/dataflows/archive.py` does the byte work without a browser stack: gzip/bzip2/ZIP, classic
+Unix `.Z` (LZW, with the platform `uncompress` preferred and a portable decoder as fallback),
+delimiter sniffing, column-name normalisation (`CURRENT`, `LTP`, `%CHANGE`, `UPPER CIRCUIT` …) and a
+stdlib HTML table reader.
 
-ta = TradingAgentsGraph(debug=True, config=config)
-_, decision = ta.propagate("NVDA", "2026-09-01")
-print(decision)
-```
+---
 
-The quick model serves the analysts, researchers, debaters and trader; the deep model serves the research and portfolio managers. Each can run on its own provider, for example the managers on Claude while the rest run on OpenAI:
+## 4. Pakistani market structure, in code
 
-```python
-config["deep_think_provider"] = "anthropic"
-config["deep_think_llm"] = "claude-opus-5-5"
-```
+### Circuit locks (`psx_desk/market_rules.py`)
 
-A tier on its own provider uses that provider's key and default endpoint; set `quick_think_backend_url` or `deep_think_backend_url` for a local or relay endpoint. The `TRADINGAGENTS_DEEP_THINK_PROVIDER` and `TRADINGAGENTS_QUICK_THINK_PROVIDER` variables set them for the CLI, together with the tier's model variable.
+A PSX scrip cannot move more than the band in force from its previous close — **"5% or Rs.1,
+whichever is higher"** on this desk's rulebook, which PSX Regulation 19.3 may widen (historically to
+7.5%). The calculated price is rounded to the tick.
 
-See `tradingagents/default_config.py` for all configuration options.
+* `circuit_band_pct` is **configuration, never a hard-coded constant** (`PSXDESK_CIRCUIT_BAND_PCT`);
+* when the session's `symbol_price` file exists, the **Exchange's own caps win** (`cap_source="exchange_file"`);
+* lock detection tolerates half a tick, so a print *at* the cap is never reported as "0.004% away";
+* `consecutive_locked_sessions` tracks a streak, because repeated lower locks are exactly when PSX
+  tightens scrutiny and withdraws short-sale exemptions;
+* a locked scrip still gets a thesis, but the CRO cannot claim a fill — it must add a pre-open
+  condition instead.
 
-### Fundamentals as filed
+### Defaulters / Non-Compliant segment (`psx_desk/dataflows/disclosures.py`)
 
-US company statements come from SEC EDGAR, which records the date every figure was filed. A run dated in the past reads the statements exactly as they stood that day: a fiscal year that has ended but has not been filed yet is not served, and a figure restated later still reads as first reported. Apple's 2008 total assets were filed as $39.6B and restated to $36.2B in 2010, so a run dated in between reads $39.6B. EDGAR needs no account or API key.
+The portal page is parsed into current non-compliant names and past defaulters. A match is an
+**absolute veto** in the schema validator: the allocation is forced to `REJECT` / `NO_TRADE` with
+zero size, whichever way the model voted. If the page cannot be read, the result is
+`checked=False` → the CRO gate reports **UNKNOWN**, not PASS, and size is halved.
 
-Other companies' statements come from Yahoo Finance, which dates a statement by the period it covers rather than by when it was published. A run dated today reads them; a run dated in the past is told they are withheld, since Yahoo cannot say which figures were public by then.
+### SBP macro (`psx_desk/dataflows/macro.py`)
 
-Insider trades are dated by when they happened, not when they were filed, so a run dated in the past is told they are withheld as well.
+Policy rate, corridor, CPI, USD/PKR, KIBOR and T-bill cut-offs are scraped from sbp.org.pk. The
+fundamental analyst must compare the **earnings yield (1/PE)** with the policy rate (equity risk
+premium) and with CPI (real earnings yield) — the two tests that actually decide whether a Pakistani
+equity deserves capital when a government-guaranteed deposit pays the policy rate. If SBP is
+unreachable, the desk falls back to a **dated, labelled print** and marks the backdrop
+`STALE` / `configured_fallback` instead of inventing a number.
 
-SEC asks callers to identify themselves and refuses requests that carry no contact address, so a default one is sent. Set your own so SEC can reach you rather than the project:
+---
 
-```bash
-SEC_EDGAR_USER_AGENT="Your Name your@email.com"
-```
+## 5. Outputs
 
-It covers companies that file with the SEC, including foreign companies listed in the US. Anything else, such as Hong Kong or A-share listings, falls through to the next vendor in the chain. EDGAR's machine-readable filings begin in 2009, and a fourth quarter is reported as unavailable rather than derived, because filers publish it only inside the annual figure.
+Each run writes three artifacts to `var/runs/<symbol>_<date>_<id>/`:
 
-### Current holdings
+| File | Audience |
+| --- | --- |
+| `note.md` | Investment committee: session print, circuit, defaulters, every risk gate, both research notes, the debate, disclosures and a provenance table |
+| `allocation.json` | Order pad: the strict `AllocationStatement` |
+| `run.json` | Audit: the full typed run record — every PSX URL, payload hash, missing field and debate turn |
 
-By default the agents do not know what you hold, so their guidance is written for a reader who applies it to their own position. Pass a portfolio to have the trader, the risk analysts and the portfolio manager work against your actual book.
-
-```python
-from tradingagents.portfolio import PortfolioContext
-
-portfolio = PortfolioContext.model_validate({
-    "cash": 25000.0,
-    "currency": "USD",
-    "positions": [{"ticker": "NVDA", "quantity": 120, "average_price": 150.0}],
-})
-_, decision = ta.propagate("NVDA", "2026-09-01", portfolio=portfolio)
-```
-
-The CLI takes the same content as a JSON file: `tradingagents --portfolio my_book.json`.
-
-An empty `positions` list means a flat book, which is different from passing nothing. A run without a portfolio is never treated as flat.
-
-## Persistence and Recovery
-
-TradingAgents persists two kinds of state across runs.
-
-### Memory log
-
-The memory log is always on. Each completed run appends its decision to `~/.tradingagents/memory/trading_memory.md`. While the analysts of a later run work, TradingAgents settles every logged decision whose holding period has passed: it fetches the realised return (raw, and alpha against the instrument's regional benchmark) and generates a one-paragraph reflection. The Portfolio Manager then reads the most recent decisions for the same ticker plus recent lessons from other tickers, so each analysis carries forward what worked and what didn't. If settling fails, the run goes on and its report says so.
-
-Override the path with `TRADINGAGENTS_MEMORY_LOG_PATH`.
-
-To settle decisions without running an analysis, for a scheduled job, call `ta.settle_all_pending()`; it returns the decisions it settled and any it could not.
-
-### Checkpoint resume
-
-Checkpoint resume is opt-in via `--checkpoint`. When enabled, LangGraph saves state after each node so a crashed or interrupted run resumes from the last successful step instead of starting over. The run view says whether it resumed a saved run or started fresh. Checkpoints are cleared automatically on successful completion.
-
-Per-ticker SQLite databases live at `~/.tradingagents/cache/checkpoints/<TICKER>.db` (override the base with `TRADINGAGENTS_CACHE_DIR`). Use `--clear-checkpoints` to reset all of them before a run.
-
-```bash
-tradingagents --checkpoint           # enable for this run
-tradingagents --clear-checkpoints    # reset before running
-```
-
-```python
-config = DEFAULT_CONFIG.copy()
-config["checkpoint_enabled"] = True
-ta = TradingAgentsGraph(config=config)
-_, decision = ta.propagate("NVDA", "2026-09-01")
-```
-
-## Evaluating decisions over time
-
-One run gives one decision, which cannot tell you whether the system decides well. `run_backtest` runs the same pipeline over a grid of tickers and dates, writes to a memory log of its own, and scores the decisions whose holding window has since traded.
-
-```python
-from tradingagents.backtest import iter_grid, run_backtest, summarize
-
-dates = iter_grid("2026-06-01", "2026-08-01", every_n_days=7)
-result = run_backtest(["NVDA", "AAPL"], dates, config, selected_analysts=["market", "news"])
-print(summarize(result).render())
-```
-
-From the CLI:
-
-```bash
-tradingagents backtest NVDA,AAPL --start 2026-06-01 --end 2026-08-01 --every 7
-```
-
-Each cell is scored on realized alpha against the instrument's regional benchmark, grouped by rating. A decision is entered at the first close after its date, because a run reads news published after that day's close. Your own memory log is never written to, and re-running the same grid with `run_id=result.run_id` skips the cells that already ran, so an interrupted sweep continues where it stopped.
-
-## Reproducibility
-
-TradingAgents is LLM-driven, so two runs of the same ticker and date can differ. This is expected for a research tool built on language models, not a defect. The variation comes from a few distinct sources, and it helps to separate them.
-
-Language model sampling is non-deterministic. Even at a fixed temperature, providers do not guarantee byte-identical output across calls, and reasoning models (the default GPT-6 family, and any thinking-mode model) vary the most because their internal reasoning is itself sampled.
-
-Live data moves. News, StockTwits, and Reddit return different content as time passes, so a run today sees different inputs than a run last week even for the same historical trade date. Pin the analysis date to hold the price and indicator window fixed, but the social and news sources still reflect "now".
-
-To reduce variation you can lower the sampling temperature. Set `temperature` in your config (or `TRADINGAGENTS_TEMPERATURE` in `.env`); lower values make models that honor it more repeatable. The current curated models are reasoning-first and largely ignore temperature, so for tighter reproducibility name a non-reasoning model in your config, or in `TRADINGAGENTS_DEEP_THINK_LLM` and `TRADINGAGENTS_QUICK_THINK_LLM`. Any model ID your provider serves is accepted, whether or not the picker lists it.
-
-```python
-config = DEFAULT_CONFIG.copy()
-config["llm_provider"] = "openai"
-config["temperature"] = 0.0
-# Reasoning models ignore temperature. For tighter reproducibility, name a
-# non-reasoning model in deep_think_llm / quick_think_llm.
-```
-
-What does not vary anymore: the analyzed company identity is resolved deterministically from the ticker before any agent runs, and the market analyst grounds exact price and indicator claims in a verified data snapshot. Earlier reports of "different companies" or fabricated price levels across runs are addressed by these two mechanisms.
-
-Backtest results are not guaranteed to match any published figure. Returns depend on the model, the temperature, the date range, data quality, and the sampling above. Treat the framework as a research scaffold for studying multi-agent analysis, not as a strategy with a fixed, replicable return.
-
-## Contributing
-
-Contributions are welcome: bug fixes, documentation, and feature ideas; past contributions are credited per release in [`CHANGELOG.md`](CHANGELOG.md).
-
-## Citation
-
-Please reference our work if you find *TradingAgents* provides you with some help :)
-
-```
-@misc{xiao2025tradingagentsmultiagentsllmfinancial,
-      title={TradingAgents: Multi-Agents LLM Financial Trading Framework}, 
-      author={Yijia Xiao and Edward Sun and Di Luo and Wei Wang},
-      year={2025},
-      eprint={2412.20138},
-      archivePrefix={arXiv},
-      primaryClass={q-fin.TR},
-      url={https://arxiv.org/abs/2412.20138}, 
+```json
+{
+  "action": "BUY",
+  "allocation_pkr": 4999693.45,
+  "approved_by": "Chief Risk Officer, PSX Equities",
+  "as_of": "2026-10-29",
+  "circuit": { "band_pct": 5.0, "cap_source": "exchange_file", "locked": "none",
+               "lower_cap_pkr": 391.92, "upper_cap_pkr": 433.18, "tradable_at_close": true },
+  "decision": "APPROVE",
+  "defaulter": { "checked": true, "is_defaulting": false, "segment": "regular" },
+  "entry_limit_pkr": 412.55,
+  "gates": [ { "gate": "defaulter_segment", "status": "pass", "blocking": true },
+             { "gate": "free_float_liquidity", "status": "pass", "blocking": true },
+             { "gate": "data_integrity", "status": "fail", "blocking": false } ],
+  "nav_pkr": 50000000.0,
+  "reward_risk": 3.282,
+  "risk_budget_pkr": 249045.45,
+  "schema_version": "psx-alloc/1.0",
+  "shares": 12119,
+  "size_cap_reason": "single-name weight cap",
+  "stop_pkr": 392.0,
+  "symbol": "SYS",
+  "target_pkr": 480.0,
+  "weight_of_nav_pct": 9.9994
 }
 ```
+
+The statement is *repaired and re-validated*, not trusted: a REJECT cannot carry size, shares and
+weight are recomputed from the allocation and entry limit, a long cannot sit below its own stop, and
+the size is clamped to the desk's computed maximum before the JSON is emitted.
+
+---
+
+## 6. Quickstart
+
+```bash
+git clone <this repo> && cd PSXTradingAgents
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+cp .env.example .env          # then put your GOOGLE_API_KEY in it
+```
+
+```bash
+psx-desk doctor                       # deps, key, psx.com.pk reachability
+psx-desk describe                     # the LangGraph pipeline
+psx-desk schema allocation            # the strict JSON schema the CRO must satisfy
+
+psx-desk scrape ENGRO                 # node ① only: show the raw PSX packet
+psx-desk run ENGRO                    # full five-node run + artifacts
+psx-desk run SYS --date 2026-10-29 --json
+```
+
+Python API:
+
+```python
+from dotenv import load_dotenv
+from psx_desk import PSXTradingDesk, load_config
+
+load_dotenv()
+desk = PSXTradingDesk(load_config())
+run = desk.run("LUCK")                       # or desk.run("LUCK", "2026-10-29")
+
+print(run.allocation.decision)               # APPROVE / APPROVE_REDUCED / REJECT
+print(run.allocation.to_json())              # strict JSON, sorted keys
+print(run.packet.circuit.locked)             # upper / lower / none
+```
+
+Docker:
+
+```bash
+docker compose run --rm desk run HUBC
+```
+
+### LLM backends
+
+* **`google-genai`** (default) — the official Google Gen AI SDK, called with
+  `response_mime_type="application/json"` plus the Pydantic JSON schema, then validated locally.
+* **`langchain`** — `ChatGoogleGenerativeAI(...).with_structured_output(Schema)`; set
+  `PSXDESK_LLM_BACKEND=langchain` and install the `[langchain]` extra.
+
+Both implement the same `StructuredInvoker` protocol, so the graph is backend-agnostic and the tests
+substitute a scripted invoker.
+
+---
+
+## 7. Configuration
+
+Everything is a frozen dataclass in `psx_desk/config.py`, overridable via `PSXDESK_*` env vars —
+see `.env.example` for the annotated list. The ones that matter most:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PSXDESK_CIRCUIT_BAND_PCT` | `5.0` | Scrip-level circuit band in force |
+| `PSXDESK_CIRCUIT_FLOOR_PKR` | `1.0` | "or Rs.1, whichever is higher" |
+| `PSXDESK_NAV_PKR` | `50,000,000` | Desk NAV the weights are measured against |
+| `PSXDESK_MAX_NAME_WEIGHT_PCT` | `10` | Concentration cap |
+| `PSXDESK_MAX_RISK_PER_TRADE_PCT` | `1` | 1R budget at the stop |
+| `PSXDESK_MAX_ADV_PARTICIPATION_PCT` | `15` | Participation in 20-day ADV |
+| `PSXDESK_MIN_ADV_VALUE_PKR` | `5,000,000` | Daily turnover floor (Rs 5m) |
+| `PSXDESK_MIN_REWARD_RISK` | `1.5` | Below this, the idea is rejected |
+| `PSXDESK_MAX_DEBATE_ROUNDS` | `2` | Bull/bear rounds |
+| `PSXDESK_OFFLINE` | `0` | Replay cache only, never touch the network |
+
+---
+
+## 8. Tests
+
+```bash
+pytest -q          # 150 hermetic tests, no network, no API key
+ruff check .
+```
+
+Every test runs against **recorded payloads** through `FixtureTransport`: a synthetic PSX board,
+`symbol_price`/`symbol_name` ZIPs, DPS-style EOD JSON (including a scrip locked at its upper cap), a
+Defaulters portal page, PUCARS notices and an SBP tile page. The scraper walks its real probe list,
+the parsers do real work, and the five agents run against a `ScriptedInvoker` that answers with
+Pydantic models — so the graph, the gates and the JSON contract are all exercised end to end.
+
+Coverage highlights: circuit arithmetic (including PSX's own tick-rounding example), `.Z`/gzip/ZIP
+decoding, table parsing, probe-failure reporting, point-in-time truncation, defaulter vetoes,
+liquidity substitution rules, size clamping, and a source-discipline test that fails the build if a
+foreign vendor ever reappears.
+
+---
+
+## 9. Known limits (stated, not hidden)
+
+* Financial results are published by PSX as **PDFs**; the desk does not OCR them. It uses the
+  disclosures list as evidence and leaves unreported metrics `null` with `data_quality="partial"`.
+  Point a PDF extractor at `DisclosureItem.url` if you need the line items.
+* Exchange holidays are not modelled: a date with no published file falls back to the live board and
+  is flagged in `packet.notes`.
+* The pure-Python `.Z` decoder is a fallback; the platform `uncompress` is preferred. The `.Z`
+  `mkt_summary` dataset is optional — the primary board path is CSV/ZIP/JSON/HTML.
+* `PSXDESK_OFFLINE=1` replays the cache, which is what a backtest or a plane seat needs.
+
+---
+
+## 10. Disclaimer
+
+Research tooling, not investment advice. Market data belongs to the Pakistan Stock Exchange;
+respect its terms of use, keep the throttle on, and do not redistribute the payloads. Nothing here
+executes an order — the CRO emits a JSON proposal that a human still has to sign off.

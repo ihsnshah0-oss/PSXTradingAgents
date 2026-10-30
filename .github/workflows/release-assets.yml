@@ -1,8 +1,8 @@
 name: Release assets
 
-# Builds the source archive and wheel from the release tag and attaches them to
-# the GitHub release, so a version can be installed without cloning:
-#   pip install https://github.com/TauricResearch/TradingAgents/releases/download/<tag>/<wheel>
+# Builds the sdist and wheel for a tagged release and attaches them to it, so the
+# desk can be installed without cloning:
+#   pip install https://github.com/<owner>/<repo>/releases/download/<tag>/psx_desk-<version>-py3-none-any.whl
 # Run it by hand with a tag to attach builds to an earlier release.
 
 on:
@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to build and attach, for example v0.6.0"
+        description: "Release tag to build and attach, for example v1.0.0"
         required: true
 
 permissions: {}
@@ -30,30 +30,15 @@ jobs:
       TAG: ${{ inputs.tag || github.event.release.tag_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
-          # Release branches share their tag's name, so name the tag explicitly.
           ref: refs/tags/${{ env.TAG }}
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
-      - name: Check the package version matches the tag
+          python-version: "3.12"
+      - name: Build
         run: |
-          version=$(python -c "import re, pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('tradingagents/__init__.py').read_text()).group(1))")
-          if [ "v$version" != "$TAG" ]; then
-            echo "tradingagents/__init__.py says $version, but the tag is $TAG"
-            exit 1
-          fi
-      - name: Build the source archive and wheel
-        run: |
-          python -m pip install --upgrade build
+          python -m pip install --upgrade pip build
           python -m build
-      - name: Install the wheel in a clean environment
-        run: |
-          python -m venv /tmp/smoke
-          /tmp/smoke/bin/pip install dist/*.whl
-          # From another directory, so the imports come from the wheel, not the checkout.
-          cd /tmp
-          /tmp/smoke/bin/python -c "import importlib.resources as r, tradingagents, cli.main; assert (r.files('cli') / 'static' / 'welcome.txt').is_file(); print('wheel install OK', tradingagents.__version__)"
-      - name: Attach them to the release
-        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+      - name: Attach to the release
+        run: gh release upload "$TAG" dist/* --clobber

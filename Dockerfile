@@ -1,30 +1,24 @@
-FROM python:3.13-slim AS builder
+# PSX Trading Desk — a single-purpose Karachi equity research desk.
+FROM python:3.12-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
-
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-WORKDIR /build
-COPY . .
-RUN pip install --no-cache-dir .
-
-FROM python:3.13-slim
-
-# TRADINGAGENTS_IN_DOCKER lets an update notice name the rebuild command.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    TRADINGAGENTS_IN_DOCKER=1
+    PSXDESK_WORK_DIR=/data
 
-COPY --from=builder /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+WORKDIR /app
 
-RUN useradd --create-home appuser \
- && install -d -m 0755 -o appuser -g appuser /home/appuser/.tradingagents
-USER appuser
-WORKDIR /home/appuser/app
+# `uncompress` (gzip) is used for PSX's legacy .Z daily files; ca-certificates
+# for the HTTPS calls to psx.com.pk / sbp.org.pk.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates gzip \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder --chown=appuser:appuser /build .
+COPY pyproject.toml README.md LICENSE ./
+COPY psx_desk ./psx_desk
+RUN pip install --no-cache-dir .
 
-ENTRYPOINT ["tradingagents"]
+RUN mkdir -p /data
+VOLUME ["/data"]
+
+ENTRYPOINT ["psx-desk"]
+CMD ["describe"]
